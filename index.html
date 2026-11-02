@@ -97,7 +97,7 @@ h1 small{display:block;font-size:12px;font-weight:400;opacity:.85;margin-top:3px
 .strip.hide{display:none}
 .strip h2{font-size:17px;margin:0 0 8px;display:flex;align-items:center;gap:8px}
 .strip h2 span{background:var(--teal);color:#fff;border-radius:99px;font-size:11px;padding:2px 9px;font-weight:500}
-.rail{overflow:hidden;padding:4px 0 14px;-webkit-mask-image:linear-gradient(90deg,transparent,#000 3%,#000 97%,transparent);mask-image:linear-gradient(90deg,transparent,#000 3%,#000 97%,transparent)}.track{display:flex;gap:14px;width:max-content;padding:0 8px;will-change:transform}
+.rail{overflow:hidden;touch-action:pan-y;padding:4px 0 14px;-webkit-mask-image:linear-gradient(90deg,transparent,#000 3%,#000 97%,transparent);mask-image:linear-gradient(90deg,transparent,#000 3%,#000 97%,transparent)}.track{display:flex;gap:14px;width:max-content;padding:0 8px;will-change:transform}
 .ev{flex:0 0 260px;background:#fff;border:2px solid var(--ink);border-radius:14px;padding:10px 13px;box-shadow:4px 4px 0 var(--ink)}
 .ev b{display:block;font-size:12px;color:var(--teal);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ev strong{display:block;font-size:16px;line-height:1.2;margin:3px 0 4px;font-weight:600}
@@ -1159,17 +1159,54 @@ try { buildSky(true); } catch (e) { console.error('banner', e); }
 /* ---------- events strip: slow auto-scroll, eases to a stop under the mouse ---------- */
 const rail = $('rail');
 let railX = 0, railSet = 0, railV = 40, railHover = false, railHold = 0, railPause = false;
+let railMouse = 0, railDrag = null, railMoved = false, railRate = 4;
+const RAIL_DEAD = .14, RAIL_MAX = 560;        // dead zone in the middle; px/s at the very edge
+function railWrap(x){ return railSet ? ((x % railSet) + railSet) % railSet : 0; }
 rail.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') railHover = true; });
-rail.addEventListener('pointerleave', () => { railHover = false; });
-rail.addEventListener('pointerdown', e => { if (e.pointerType !== 'mouse') railHold = performance.now() + 3000; });
+rail.addEventListener('pointerleave', () => { railHover = false; railMouse = 0; });
+rail.addEventListener('pointermove', e => {
+  if (e.pointerType === 'mouse' && !railDrag){            // cursor position -> direction + speed (faster toward the edges)
+    const r = rail.getBoundingClientRect(), p = ((e.clientX - r.left) / r.width - .5) * 2;
+    const m = Math.max(0, (Math.abs(p) - RAIL_DEAD) / (1 - RAIL_DEAD));
+    railMouse = Math.sign(p) * Math.pow(Math.min(1, m), 1.6) * RAIL_MAX;
+  }
+});
+rail.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'mouse' || !railSet) return;     // touch / pen: drag with momentum
+  railDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now(), v: 0, on: false };
+  railMoved = false;
+});
+rail.addEventListener('pointermove', e => {
+  const d = railDrag; if (!d || e.pointerId !== d.id) return;
+  const dx = e.clientX - d.x, now = performance.now();
+  if (!d.on){
+    if (Math.abs(dx) < 6 && Math.abs(e.clientY - d.y) < 6) return;
+    if (Math.abs(e.clientY - d.y) > Math.abs(dx)){ railDrag = null; return; }   // vertical = page scroll
+    d.on = true; railMoved = true; try { rail.setPointerCapture(e.pointerId); } catch (_) {}
+  }
+  const dt = Math.max(.008, (now - d.t) / 1000);
+  d.v = d.v * .6 + (-dx / dt) * .4;                       // smoothed finger velocity (px/s)
+  railX = railWrap(railX - dx); d.x = e.clientX; d.t = now;
+  railV = d.v;
+});
+const railEnd = e => {
+  const d = railDrag; if (!d || e.pointerId !== d.id) return;
+  railDrag = null;
+  if (d.on){ railV = Math.max(-2600, Math.min(2600, d.v)); railHold = performance.now() + 1400; }   // fling: speed follows the swipe
+};
+rail.addEventListener('pointerup', railEnd); rail.addEventListener('pointercancel', railEnd);
+rail.addEventListener('click', e => { if (railMoved){ e.stopPropagation(); e.preventDefault(); railMoved = false; } }, true);
 function railTick(t){
   const dt = Math.min(.05, (t - (railTick.l || t)) / 1000); railTick.l = t;
-  if (railSet){
-    const target = (railHover || railPause || performance.now() < railHold) ? 0 : 40;
-    railV += (target - railV) * Math.min(1, dt * 4);
-    railX = (railX + railV * dt) % railSet;
-    const tr = $('track'); if (tr) tr.style.transform = `translateX(${-railX}px)`;
+  if (railSet && !(railDrag && railDrag.on)){
+    let target = 40, rate = 2.2;
+    if (railPause) target = 0, rate = 5;
+    else if (railHover) target = railMouse, rate = 5;     // mouse: follow cursor offset
+    else if (performance.now() < railHold) target = 0, rate = 2.2;   // after a swipe: glide to a stop, then drift on
+    railV += (target - railV) * Math.min(1, dt * rate);
+    railX = railWrap(railX + railV * dt);
   }
+  if (railSet){ const tr = $('track'); if (tr) tr.style.transform = `translateX(${-railX}px)`; }
   requestAnimationFrame(railTick);
 }
 requestAnimationFrame(railTick);
